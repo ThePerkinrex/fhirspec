@@ -951,6 +951,8 @@ class FHIRStructureDefinition:
     def process_profile(self) -> None:
         """Extract all elements and create classes."""
         # Use the full snapshot if we have it, otherwise differential
+        print("  ➤ snapshot length:", len(self.structure.snapshot or []))
+        print("  ➤ differential length:", len(self.structure.differential or []))
         struct = self.structure.snapshot or self.structure.differential
         if struct is not None:
             mapped = {}
@@ -979,6 +981,8 @@ class FHIRStructureDefinition:
 
             # run check: if n_min > 0 and parent is in summary, must also be in summary
             for element in self.elements:
+                if element.path == "Patient.extension":
+                    print("Slices:", [d.id for d in element.definition.slice_definitions]) # type: ignore
                 if element.n_min is not None and element.n_min > 0:
                     if (
                         element.parent is not None
@@ -1304,48 +1308,77 @@ class FHIRStructureDefinitionElement:
         return cls, subs
 
     def as_properties(self) -> Union[List["FHIRClassProperty"], None]:
-        """If the element describes a *class property*, returns a list of
-        FHIRClassProperty instances, None otherwise.
-        """
+        """If the element describes a class property, returns a list of
+        FHIRClassProperty instances (one per type or one per slice), or None."""
         assert self._did_resolve_dependencies
+
+        # ————————————————
+        # 1) never emit props for the root of the profile
         if self.is_main_profile_element or self.definition is None:
             return None
 
-        # TODO: handle slicing information (not sure why these properties were
-        # omitted previously)
-        # if self.definition.slicing:
-        #    logger.debug('Omitting property "{}"
-        #    for slicing'.format(self.definition.prop_name))
-        #    return None
+        # 2) skip any *slice child* (id contains “:”) so we don’t re-emit a generic extension
+        slice_id = self.definition.id
+        if slice_id and ":" in slice_id:
+            return None
 
-        # this must be a property
+        # ————————————————
+        # 3) if this element *defines* slicing, emit one property per slice
+        base = self.definition
+        if base.slicing is not None and base.slice_definitions:
+            LOGGER.info(f"⧉ SLICING {self.path}: found {len(base.slice_definitions)} slices")
+            props: List[FHIRClassProperty] = []
+            slicing = base.slicing  # type: FHIRElementSlicing
+            for slice_def in base.slice_definitions:
+                sid = slice_def.id
+                if not sid or ":" not in sid:
+                    continue
+                _, slice_name = sid.split(":", 1)
+                # e.g. “KaryotypicSex” → “karyotypicSex”
+                prop_name = slice_name[0].lower() + slice_name[1:]
+
+                for type_obj in slice_def.types:
+                    # pass slice_def.name_if_class() so the field is typed to KaryotypicSexType
+                    inline_cls = slice_def.name_if_class()
+                    p = FHIRClassProperty(self, type_obj, inline_cls)
+                    p.name = prop_name
+
+                    # stash discriminator, cardinality, and URL into the JSON-schema extras
+                    extra: dict = {
+                        "slice_discriminator": [
+                            {"type": d.type, "path": d.path}
+                            for d in slicing.discriminator
+                        ],
+                        "min_items": slice_def.element.n_min or 0,
+                        "max_items": slice_def.element.n_max or "*",
+                    }
+                    if hasattr(slice_def, "patternUrl"):
+                        extra["slice_url"] = slice_def.patternUrl
+                    p.json_schema_extra = extra
+
+                    props.append(p)
+            return props
+
+        # ————————————————
+        # 4) otherwise this is a “normal” property – ensure it even has a parent
         if self.parent is None:
-            raise Exception(
-                f'Element reports as property but has no parent: "{self.path}"'
-            )
+            raise Exception(f'Element reports as property but has no parent: "{self.path}"')
 
-        # create a list of FHIRClassProperty instances (usually with only 1 item)
+        # 5) if it has types, one prop per type (backbone vs primitive)
         if len(self.definition.types) > 0:
             props: List[FHIRClassProperty] = []
             for type_obj in self.definition.types:
-
-                # an inline class
-                if (
-                    "BackboneElement" == type_obj.code or "Element" == type_obj.code
-                ):  # data types don't use "BackboneElement"
+                if type_obj.code in ("BackboneElement", "Element"):
                     props.append(
                         FHIRClassProperty(self, type_obj, self.name_if_class())
                     )
-                    # TODO: look at http://hl7.org/fhir/
-                    # StructureDefinition/structuredefinition-explicit-type-name ?
                 else:
                     props.append(FHIRClassProperty(self, type_obj, None))
             return props
 
-        # no `type` definition in the element:
-        # it's a property with an inline class definition
-        type_obj = FHIRElementType()
-        return [FHIRClassProperty(self, type_obj, self.name_if_class())]
+        # 6) no types → inline class
+        return [FHIRClassProperty(self, FHIRElementType(), self.name_if_class())]
+
 
     # MARK: Name Utils
     def name_of_resource(self) -> str:
@@ -1905,6 +1938,8 @@ class FHIRClassProperty:
 
         self.field_type = self.class_name
         self.field_type_module = self.module_name
+
+        self.json_schema_extra: Dict[str, Any] = {}
 
 
 class FHIRResourceFile:
