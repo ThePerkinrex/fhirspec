@@ -1474,19 +1474,24 @@ class FHIRStructureDefinitionElementDefinition:
     def resolve_dependencies(self) -> None:
         # update the definition from a reference, if there is one
         if self.content_reference is not None:
-            if "#" != self.content_reference[:1]:
-                raise Exception(
-                    "Only relative 'contentReference' element"
-                    " definitions are supported right now"
-                )
-            elem = self.element.profile.element_with_id(self.content_reference[1:])
+            # Normalize any contentReference into the fragment ID
+            ref = self.content_reference
+            if "#" in ref:
+                # e.g. "...#Observation.referenceRange" → "Observation.referenceRange"
+                target_id = ref.rsplit("#", 1)[1]
+            else:
+                # e.g. ".../Observation.referenceRange" → "Observation.referenceRange"
+                target_id = ref.rstrip("/").split("/")[-1]
+                raise Exception(f'Invalid content reference: {ref}')
+
+            elem = self.element.profile.element_with_id(target_id)
             if elem is None:
-                raise Exception(
-                    "There is no element definition with "
-                    f'id "{self.content_reference}", as referenced by '
-                    f"{self.element.path} in {self.element.profile.url}"
+                LOGGER.warning(
+                    f"Could not resolve contentReference '{ref}' "
+                    f"(normalized to '{target_id}') in element {self.element.path}"
                 )
-            self._content_referenced = elem.definition
+            else:
+                self._content_referenced = elem.definition
 
         # resolve bindings
         if (
