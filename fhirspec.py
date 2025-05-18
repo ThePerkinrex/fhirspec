@@ -951,8 +951,8 @@ class FHIRStructureDefinition:
     def process_profile(self) -> None:
         """Extract all elements and create classes."""
         # Use the full snapshot if we have it, otherwise differential
-        print("  ➤ snapshot length:", len(self.structure.snapshot or []))
-        print("  ➤ differential length:", len(self.structure.differential or []))
+        print("  > snapshot length:", len(self.structure.snapshot or []))
+        print("  > differential length:", len(self.structure.differential or []))
         struct = self.structure.snapshot or self.structure.differential
         if struct is not None:
             mapped = {}
