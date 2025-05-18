@@ -1310,6 +1310,11 @@ class FHIRStructureDefinitionElement:
     def as_properties(self) -> Union[List["FHIRClassProperty"], None]:
         """If the element describes a class property, returns a list of
         FHIRClassProperty instances (one per type or one per slice), or None."""
+        print(
+            f"as_properties({self.path!r}): "
+            f"slicing={bool(self.definition and self.definition.slicing)}, "
+            f"slice_defs={len(self.definition.slice_definitions) if self.definition else 0}"
+        )
         assert self._did_resolve_dependencies
 
         # ————————————————
@@ -1326,7 +1331,7 @@ class FHIRStructureDefinitionElement:
         # 3) if this element *defines* slicing, emit one property per slice
         base = self.definition
         if base.slicing is not None and base.slice_definitions:
-            LOGGER.info(f"⧉ SLICING {self.path}: found {len(base.slice_definitions)} slices")
+            print(f"⧉ SLICING {self.path}: found {len(base.slice_definitions)} slices")
             props: List[FHIRClassProperty] = []
             slicing = base.slicing  # type: FHIRElementSlicing
             for slice_def in base.slice_definitions:
