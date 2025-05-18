@@ -2,6 +2,7 @@
 """Python representation of FHIR® https://www.hl7.org/fhir/ specification.
 Idea and class structure based on https://github.com/smart-on-fhir/fhir-parser.
 """
+from __future__ import annotations
 import datetime
 import enum
 import importlib
@@ -972,6 +973,7 @@ class FHIRStructureDefinition:
                     parent.add_child(element)
 
             # resolve element dependencies
+            self._group_slices()
             for element in self.elements:
                 element.resolve_dependencies()
 
@@ -1111,6 +1113,32 @@ class FHIRStructureDefinition:
                     cls.superclass = super_cls
 
         self._did_finalize = True
+
+    def _group_slices(self) -> None:
+        """
+        Look for any ElementDefinition whose .definition.id contains ':'
+        and whose base is defined with a slicing block; assign that slice
+        Definition into its parent's .slice_definitions list.
+        """
+        # build a lookup from base‐IDs → element
+        id_map = {
+            el.definition.id: el
+            for el in self.elements
+            if el.definition and el.definition.id
+        }
+        # clear out any old slice lists
+        for el in self.elements:
+            if el.definition and el.definition.slicing:
+                el.definition.slice_definitions.clear()
+
+        # find every slice (id = "baseId:sliceName")
+        for el in self.elements:
+            defn = el.definition
+            if defn and defn.id and ":" in defn.id:
+                base_id, _slice_name = defn.id.split(":", 1)
+                parent_el = id_map.get(base_id)
+                if parent_el and parent_el.definition and parent_el.definition.slicing:
+                    parent_el.definition.slice_definitions.append(defn)
 
 
 class FHIRStructureDefinitionStructure:
@@ -1364,6 +1392,27 @@ class FHIRStructureDefinitionElement:
         return self._superclass_name
 
 
+class FHIRElementDiscriminator:
+    def __init__(self, d: Dict[str, Any]):
+        # e.g. { "type": "value", "path": "system" }
+        self.type: str = d["type"]
+        self.path: Optional[str] = d.get("path")
+
+
+class FHIRElementSlicing:
+    def __init__(self, s: Dict[str, Any]):
+        # one or more ways to tell the slices apart
+        self.discriminator: List[FHIRElementDiscriminator] = [
+            FHIRElementDiscriminator(d) for d in s.get("discriminator", [])
+        ]
+        # does the incoming list *have* to be in slice order?
+        self.ordered: bool = s.get("ordered", False)
+        # "open" / "closed" / "openAtEnd"
+        self.rules: str = s.get("rules", "open")
+        # optional human‐readable note
+        self.description: Optional[str] = s.get("description")
+
+
 class FHIRStructureDefinitionElementDefinition:
     """The definition of a FHIR element."""
 
@@ -1378,18 +1427,18 @@ class FHIRStructureDefinitionElementDefinition:
         self.name: Optional[str] = None
         self.prop_name: Optional[str] = None
         self.content_reference: Optional[str] = None
-        self._content_referenced: Optional[
-            FHIRStructureDefinitionElementDefinition
-        ] = None
+        self._content_referenced: Optional[FHIRStructureDefinitionElementDefinition] = (
+            None
+        )
         self.short: Optional[str] = None
         self.formal: Optional[str] = None
         self.comment: Optional[str] = None
         self.binding: Optional[FHIRElementBinding] = None
         self.constraint: Optional[FHIRElementConstraint] = None
         self.mapping: Optional[FHIRElementMapping] = None
-        self.slicing: Optional[Dict[str, Any]] = None
+        self.slicing: Optional[FHIRElementSlicing] = None
+        self.slice_definitions: List["FHIRStructureDefinitionElementDefinition"] = []
         self.representation: Optional[Sequence[str]] = None
-        # TODO: handle  "slicing"
 
         if definition_dict is not None:
             self.parse_from(definition_dict)
@@ -1419,7 +1468,7 @@ class FHIRStructureDefinitionElementDefinition:
         if "mapping" in definition_dict:
             self.mapping = FHIRElementMapping(definition_dict["mapping"])
         if "slicing" in definition_dict:
-            self.slicing = definition_dict["slicing"]
+            self.slicing = FHIRElementSlicing(definition_dict["slicing"])
         self.representation = definition_dict.get("representation")
 
     def resolve_dependencies(self) -> None:
@@ -1451,9 +1500,9 @@ class FHIRStructureDefinitionElementDefinition:
                 LOGGER.debug(f'Ignoring foreign ValueSet "{uri}"')
                 return
 
-            valueset: Optional[
-                FHIRValueSet
-            ] = self.element.profile.spec.valueset_with_uri(uri)
+            valueset: Optional[FHIRValueSet] = (
+                self.element.profile.spec.valueset_with_uri(uri)
+            )
             if valueset is None:
                 LOGGER.error(
                     "There is no ValueSet for required binding "
@@ -1845,9 +1894,9 @@ class FHIRClassProperty:
         if element.definition:
             self.short: Optional[str] = element.definition.short
             self.formal: Optional[str] = element.definition.formal
-            self.representation: Optional[
-                Sequence[str]
-            ] = element.definition.representation
+            self.representation: Optional[Sequence[str]] = (
+                element.definition.representation
+            )
 
         self.field_type = self.class_name
         self.field_type_module = self.module_name
